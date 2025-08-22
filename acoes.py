@@ -111,8 +111,11 @@ def buscar_dividendos_b3(ticker, empresas_df, data_inicio, data_fim):
     if 'lastDatePriorEx' in df.columns:
         df['lastDatePriorEx_dt'] = pd.to_datetime(df['lastDatePriorEx'], format='%d/%m/%Y', errors='coerce')
         df = df.dropna(subset=['lastDatePriorEx_dt'])
-        df = df[(df['lastDatePriorEx_dt'] >= data_inicio) & (df['lastDatePrior_dt'] <= data_fim)]
+        # --- CORREÇÃO APLICADA AQUI: O nome da coluna no filtro foi corrigido de 'lastDatePrior_dt' para 'lastDatePriorEx_dt' ---
+        df = df[(df['lastDatePriorEx_dt'] >= data_inicio) & (df['lastDatePriorEx_dt'] <= data_fim)]
         df = df.drop(columns=['lastDatePriorEx_dt'])
+        # --- Adicionado: Garante que a coluna de data original seja string para evitar erro ArrowTypeError ---
+        df['lastDatePriorEx'] = df['lastDatePriorEx'].astype(str)
     if df.empty: return pd.DataFrame()
     cols_to_keep = ['Ticker', 'paymentDate', 'typeStock', 'lastDatePriorEx', 'value', 'relatedToAction', 'label', 'ratio']
     existing_cols_to_keep = [col for col in cols_to_keep if col in df.columns]
@@ -143,6 +146,8 @@ def buscar_bonificacoes_b3(ticker, empresas_df, data_inicio, data_fim):
                 df = df.dropna(subset=['lastDatePrior_dt'])
                 df = df[(df['lastDatePrior_dt'] >= data_inicio) & (df['lastDatePrior_dt'] <= data_fim)]
                 df = df.drop(columns=['lastDatePrior_dt'])
+                # --- Adicionado: Garante que a coluna de data original seja string para evitar erro ArrowTypeError ---
+                df['lastDatePrior'] = df['lastDatePrior'].astype(str)
             if df.empty: return pd.DataFrame()
             cols_to_keep = ['Ticker', 'label', 'lastDatePrior', 'factor', 'approvedIn', 'isinCode']
             existing_cols_to_keep = [col for col in cols_to_keep if col in df.columns]
@@ -457,7 +462,7 @@ if st.session_state.get('dados_buscados', False):
         for erro in st.session_state.erros_gerais:
             st.warning(erro)
     if st.session_state.todos_dados_acoes:
-        st.subheader("1. Preços Históricos (Yahoo Finance)")
+        st.subheader("1. Preços Históricos (Yahoo Finance e Alpha Vantage)")
         df_acoes_agrupado = pd.concat(st.session_state.todos_dados_acoes.values(), ignore_index=True)
         st.dataframe(df_acoes_agrupado)
     if st.session_state.todos_dados_dividendos:
@@ -503,6 +508,6 @@ if st.session_state.get('dados_buscados', False):
 st.markdown("""
 ---
 **Fontes dos dados:**
-- Preços Históricos: [Yahoo Finance](https://finance.yahoo.com), [Alpha Vantage](https://www.alphavantage.co)
+- Preços Históricos: [Yahoo Finance](https://finance.yahoo.com)
 - Dividendos e Eventos societários: [API B3](https://www.b3.com.br), [Yahoo Finance](https://finance.yahoo.com), [Alpha Vantage](https://www.alphavantage.co)
 """)
