@@ -273,7 +273,7 @@ with col4:
 ticker_sources = {
     'SUZB3': 'B3', 'KLBN11': 'B3',
     'CMPC.SN': 'YF', 'UPM.HE': 'YF',
-    'IP': 'YF' 
+    'IP': 'YF' }
 
 # --- Inicialização do Session State ---
 if 'dados_buscados' not in st.session_state:
