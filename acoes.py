@@ -454,7 +454,7 @@ if st.button('Buscar Dados', key="search_button"):
         if all_bonuses_temp: st.session_state.todos_dados_bonificacoes = {f"bon_{i}": df for i, df in enumerate(all_bonuses_temp)}
 
     st.session_state.dados_buscados = True
-    st.experimental_rerun()
+    st.rerun()
 
 # --- EXIBIÇÃO E DOWNLOAD ---
 if st.session_state.get('dados_buscados', False):
