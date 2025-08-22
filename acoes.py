@@ -310,25 +310,27 @@ def buscar_dados_yfinance_completo(tickers_list, data_inicio_input, data_fim_inp
                 standard_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
                 cols_order_start = ['Ticker', 'Date']
                 existing_standard_cols = [col for col in standard_cols if col in precos_df.columns]
-                other_cols = [col for col in precos_df.columns if col not in cols_order_start and col not in existing_standard_cols]
+                other_cols = [col for col in precos_df.columns if col not in cols_order_start and col not in existing_standard_cols and 'Dividends' not in col and 'Stock Splits' not in col]
                 final_cols_order = cols_order_start + existing_standard_cols + other_cols
                 precos_dict[ticker_original] = precos_df[final_cols_order]
 
-                # Extrai dados de dividendos
+                # Extrai dados de dividendos (com a correção para selecionar apenas colunas relevantes)
                 dividends_df = dados_ticker[dados_ticker['Dividends'] > 0].copy()
                 if not dividends_df.empty:
                     dividends_df = dividends_df.rename(columns={'Date': 'paymentDate', 'Dividends': 'value'})
                     dividends_df['typeStock'] = 'Dividendo'
                     dividends_df['relatedToAction'] = 'Yahoo Finance'
                     dividends_df['Ticker'] = ticker_original
+                    # Seleciona apenas as colunas de eventos e as novas colunas
                     dividends_dict[ticker_original] = dividends_df[['Ticker', 'paymentDate', 'value', 'typeStock', 'relatedToAction']]
 
-                # Extrai dados de bonificações (splits)
+                # Extrai dados de bonificações (com a correção para selecionar apenas colunas relevantes)
                 bonuses_df = dados_ticker[dados_ticker['Stock Splits'] > 0].copy()
                 if not bonuses_df.empty:
                     bonuses_df = bonuses_df.rename(columns={'Date': 'lastDatePrior', 'Stock Splits': 'factor'})
                     bonuses_df['label'] = 'Bonificação (Stock Split)'
                     bonuses_df['Ticker'] = ticker_original
+                    # Seleciona apenas as colunas de eventos e as novas colunas
                     bonuses_dict[ticker_original] = bonuses_df[['Ticker', 'lastDatePrior', 'factor', 'label']]
 
             else:
@@ -433,7 +435,8 @@ if st.button('Buscar Dados', key="search_button"):
                 precos_yf, div_yf, bon_yf, erros_yf = buscar_dados_yfinance_completo(
                     todos_tickers_yf, data_inicio_input, data_fim_input, df_empresas
                 )
-                st.session_state.todos_dados_acoes.update(precos_yf)
+                if "Preços Históricos" in tipos_dados_selecionados:
+                    st.session_state.todos_dados_acoes.update(precos_yf)
                 st.session_state.erros_gerais.extend(erros_yf)
                 if "Dividendos" in tipos_dados_selecionados:
                     all_dividends_temp.extend(div_yf.values())
