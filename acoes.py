@@ -22,8 +22,6 @@ def carregar_empresas():
     """Carrega e pré-processa o DataFrame de empresas a partir de um arquivo Excel."""
     try:
         df_empresas = pd.read_excel(URL_EMPRESAS)
-
-        # Padronizar colunas de texto e remover espaços extras
         cols_to_process = ['Nome do Pregão', 'Tickers', 'CODE', 'typeStock']
         for col in cols_to_process:
             if col in df_empresas.columns:
@@ -33,8 +31,6 @@ def carregar_empresas():
                     df_empresas[col] = df_empresas[col].str.replace(r'\s*S\.?A\.?/A?', ' S.A.', regex=True).str.upper().str.strip()
                 if col == 'typeStock':
                     df_empresas[col] = df_empresas[col].str.upper()
-
-        # Remover linhas onde Tickers ou Nome do Pregão estão vazios após limpeza
         df_empresas = df_empresas[df_empresas['Tickers'] != '']
         df_empresas = df_empresas[df_empresas['Nome do Pregão'] != '']
         return df_empresas
@@ -73,6 +69,7 @@ def patch_yfdata_cookie_basic():
     _data.YfData._get_cookie_basic = _patched
 
 patch_yfdata_cookie_basic()
+
 
 # --- Funções de Busca da B3 (mantidas do código original) ---
 def buscar_dividendos_b3(ticker, empresas_df, data_inicio, data_fim):
@@ -166,48 +163,7 @@ def buscar_bonificacoes_b3(ticker, empresas_df, data_inicio, data_fim):
         st.error(f"Erro ao buscar bonificações na B3 para {ticker}: {e}")
         return pd.DataFrame()
 
-
-def buscar_eventos_yfinance(ticker, data_inicio, data_fim):
-    """Busca dividendos e bonificações no Yahoo Finance usando yfinance.Ticker."""
-    try:
-        with st.spinner(f"Buscando eventos no Yahoo Finance para {ticker}..."):
-            # O yfinance já adiciona o .SA para tickers da B3 internamente
-            ticker_yf = yf.Ticker(ticker)
-            actions_df = ticker_yf.actions
-            if actions_df.empty:
-                return pd.DataFrame(), pd.DataFrame()
-            
-            actions_df = actions_df.reset_index()
-            actions_df['Ticker'] = ticker
-            actions_df['Date'] = pd.to_datetime(actions_df['Date'])
-            actions_df = actions_df[(actions_df['Date'] >= data_inicio) & (actions_df['Date'] <= data_fim)]
-            actions_df['Date'] = actions_df['Date'].dt.strftime('%d/%m/%Y')
-
-            # Separa em Dividendos e Bonificações (Splits)
-            dividends_df = actions_df[actions_df['Dividends'] > 0].copy()
-            bonuses_df = actions_df[actions_df['Stock Splits'] > 0].copy()
-
-            if not dividends_df.empty:
-                dividends_df = dividends_df.rename(columns={'Date': 'paymentDate', 'Dividends': 'value'})
-                dividends_df['typeStock'] = 'Dividendo'
-                dividends_df['relatedToAction'] = 'Yahoo Finance'
-                dividends_df = dividends_df[['Ticker', 'paymentDate', 'value', 'typeStock', 'relatedToAction']]
-            else:
-                dividends_df = pd.DataFrame()
-            
-            if not bonuses_df.empty:
-                bonuses_df = bonuses_df.rename(columns={'Date': 'lastDatePrior', 'Stock Splits': 'factor'})
-                bonuses_df['label'] = 'Bonificação (Stock Split)'
-                bonuses_df = bonuses_df[['Ticker', 'lastDatePrior', 'factor', 'label']]
-            else:
-                bonuses_df = pd.DataFrame()
-
-            return dividends_df, bonuses_df
-    except Exception as e:
-        st.error(f"Erro ao buscar eventos no Yahoo Finance para {ticker}: {e}")
-        return pd.DataFrame(), pd.DataFrame()
-
-
+# --- NOVA FUNÇÃO: Busca Eventos da Alpha Vantage (mantida) ---
 def buscar_eventos_alpha_vantage(ticker, api_key, data_inicio, data_fim):
     """
     Busca dividendos e bonificações na Alpha Vantage usando o endpoint TIME_SERIES_DAILY_ADJUSTED.
@@ -255,8 +211,7 @@ def buscar_eventos_alpha_vantage(ticker, api_key, data_inicio, data_fim):
                             'relatedToAction': 'Alpha Vantage'
                         })
 
-            if not all_data:
-                return pd.DataFrame(), pd.DataFrame()
+            if not all_data: return pd.DataFrame(), pd.DataFrame()
 
             all_df = pd.DataFrame(all_data)
             all_df['Date'] = all_df['Date'].dt.strftime('%d/%m/%Y')
@@ -270,84 +225,120 @@ def buscar_eventos_alpha_vantage(ticker, api_key, data_inicio, data_fim):
         st.error(f"Erro ao buscar dados na Alpha Vantage para {ticker}: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
+# --- NOVA FUNÇÃO: Busca completa de dados no Yahoo Finance (incluindo B3) ---
+@st.cache_data(show_spinner=False)
+def buscar_dados_yfinance_completo(tickers_list, data_inicio_input, data_fim_input, empresas_df):
+    """
+    Busca preços históricos, dividendos e bonificações no Yahoo Finance de forma consolidada.
+    Utiliza a sessão com emulação para evitar erros de 'rate limit'.
+    """
+    precos_dict = {}
+    dividends_dict = {}
+    bonuses_dict = {}
+    erros = []
 
-def buscar_dados_acoes(tickers_input, data_inicio_input, data_fim_input, empresas_df, st=None):
     try:
         data_inicio_str = datetime.strptime(data_inicio_input, "%d/%m/%Y").strftime("%Y-%m-%d")
         data_fim_dt = datetime.strptime(data_fim_input, "%d/%m/%Y")
         data_fim_ajustada_str = (data_fim_dt + timedelta(days=1)).strftime("%Y-%m-%d")
     except ValueError:
-        if st: st.error("Formato de data inválido. Use dd/mm/aaaa.")
-        return {}, ["Formato de data inválido."]
+        return {}, {}, {}, ["Formato de data inválido. Use dd/mm/aaaa."]
 
-    tickers_list = [ticker.strip().upper() for ticker in tickers_input.split(',') if ticker.strip()]
-    dados_acoes_dict = {}
-    erros = []
-
+    # Prepara a lista de tickers para o yfinance, adicionando .SA se for B3
     b3_tickers_set = set()
     if 'Tickers' in empresas_df.columns:
         for t_list in empresas_df['Tickers'].dropna().str.split(','):
-            for ticker in t_list:
-                if ticker.strip():
-                    b3_tickers_set.add(ticker.strip().upper())
-
+            for t in t_list:
+                if t.strip():
+                    b3_tickers_set.add(t.strip().upper())
+    
     tickers_yf = []
     for ticker in tickers_list:
         if ticker in b3_tickers_set:
             tickers_yf.append(ticker + '.SA')
         else:
             tickers_yf.append(ticker)
-    
+
+    # Cria sessão curl_cffi para emulação
     session = curl_requests.Session(impersonate="chrome")
 
-    try:
-        if st: st.write(f"Buscando preços históricos para {', '.join(tickers_list)}...")
-        else: print(f"Buscando preços históricos para {', '.join(tickers_list)}...")
-        
-        dados = yf.download(
-            tickers=tickers_yf,
-            start=data_inicio_str,
-            end=data_fim_ajustada_str,
-            auto_adjust=False,
-            progress=False,
-            session=session
-        )
-    except Exception as e:
-        error_type = type(e).__name__
-        return {}, [f"Erro ao baixar dados de preços: {error_type} - {e}"]
-    
-    for idx, ticker in enumerate(tickers_list):
-        ticker_yf = tickers_yf[idx]
+    with st.spinner(f"Buscando dados no Yahoo Finance para {', '.join(tickers_list)}..."):
         try:
-            if isinstance(dados.columns, pd.MultiIndex):
-                if ticker_yf not in dados.columns.get_level_values(1):
-                    erros.append(f"Nenhum dado encontrado para {ticker} ({ticker_yf}).")
+            # Chama yf.download uma única vez para todos os tickers, incluindo eventos
+            dados_completos = yf.download(
+                tickers=tickers_yf,
+                start=data_inicio_str,
+                end=data_fim_ajustada_str,
+                auto_adjust=False,
+                progress=False,
+                actions=True, # Adicionado para buscar dividendos e splits
+                session=session
+            )
+        except Exception as e:
+            error_type = type(e).__name__
+            erros.append(f"Erro ao baixar dados do Yahoo Finance: {error_type} - {e}")
+            return {}, {}, {}, erros
+    
+    if dados_completos.empty:
+        erros.append(f"Nenhum dado encontrado para os tickers.")
+        return {}, {}, {}, erros
+
+    # Processa os dados para cada ticker
+    for i, ticker_original in enumerate(tickers_list):
+        ticker_yf = tickers_yf[i]
+        try:
+            if isinstance(dados_completos.columns, pd.MultiIndex):
+                if ticker_yf not in dados_completos.columns.get_level_values(1):
+                    erros.append(f"Nenhum dado encontrado para {ticker_original} ({ticker_yf}).")
                     continue
-                dados_ticker = dados.xs(key=ticker_yf, axis=1, level=1)
+                dados_ticker = dados_completos.xs(key=ticker_yf, axis=1, level=1)
             else:
-                if dados.empty:
-                    erros.append(f"Nenhum dado encontrado para {ticker} ({ticker_yf}).")
+                if dados_completos.empty:
+                    erros.append(f"Nenhum dado encontrado para {ticker_original} ({ticker_yf}).")
                     continue
-                dados_ticker = dados.copy()
+                dados_ticker = dados_completos.copy()
 
             if not dados_ticker.empty:
                 dados_ticker = dados_ticker.reset_index()
                 dados_ticker = dados_ticker[dados_ticker['Date'] <= data_fim_dt]
-                dados_ticker['Date'] = pd.to_datetime(dados_ticker['Date']).dt.strftime('%d/%m/%Y')
-                dados_ticker['Ticker'] = ticker
+                dados_ticker['Date'] = pd.to_datetime(dados_ticker['Date'])
+                
+                # Extrai dados de preços
+                precos_df = dados_ticker.copy()
+                precos_df['Ticker'] = ticker_original
+                precos_df['Date'] = precos_df['Date'].dt.strftime('%d/%m/%Y')
                 standard_cols = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
                 cols_order_start = ['Ticker', 'Date']
-                existing_standard_cols = [col for col in standard_cols if col in dados_ticker.columns]
-                other_cols = [col for col in dados_ticker.columns if col not in cols_order_start and col not in existing_standard_cols]
+                existing_standard_cols = [col for col in standard_cols if col in precos_df.columns]
+                other_cols = [col for col in precos_df.columns if col not in cols_order_start and col not in existing_standard_cols]
                 final_cols_order = cols_order_start + existing_standard_cols + other_cols
-                dados_ticker = dados_ticker[final_cols_order]
-                dados_acoes_dict[ticker] = dados_ticker
+                precos_dict[ticker_original] = precos_df[final_cols_order]
+
+                # Extrai dados de dividendos
+                dividends_df = dados_ticker[dados_ticker['Dividends'] > 0].copy()
+                if not dividends_df.empty:
+                    dividends_df = dividends_df.rename(columns={'Date': 'paymentDate', 'Dividends': 'value'})
+                    dividends_df['typeStock'] = 'Dividendo'
+                    dividends_df['relatedToAction'] = 'Yahoo Finance'
+                    dividends_df['Ticker'] = ticker_original
+                    dividends_dict[ticker_original] = dividends_df[['Ticker', 'paymentDate', 'value', 'typeStock', 'relatedToAction']]
+
+                # Extrai dados de bonificações (splits)
+                bonuses_df = dados_ticker[dados_ticker['Stock Splits'] > 0].copy()
+                if not bonuses_df.empty:
+                    bonuses_df = bonuses_df.rename(columns={'Date': 'lastDatePrior', 'Stock Splits': 'factor'})
+                    bonuses_df['label'] = 'Bonificação (Stock Split)'
+                    bonuses_df['Ticker'] = ticker_original
+                    bonuses_dict[ticker_original] = bonuses_df[['Ticker', 'lastDatePrior', 'factor', 'label']]
+
             else:
-                erros.append(f"Sem dados de preços históricos encontrados para {ticker} ({ticker_yf}) no período.")
+                erros.append(f"Sem dados de preços, dividendos ou bonificações para {ticker_original} no período.")
         except Exception as e:
             error_type = type(e).__name__
-            erros.append(f"Erro ao processar dados de preços para {ticker} ({ticker_yf}): {error_type} - {e}")
-    return dados_acoes_dict, erros
+            erros.append(f"Erro ao processar dados de {ticker_original}: {error_type} - {e}")
+
+    return precos_dict, dividends_dict, bonuses_dict, erros
+
 
 # ============================================
 # Interface do Streamlit
@@ -418,46 +409,56 @@ if st.button('Buscar Dados', key="search_button"):
             st.error("Formato de data inválido. Use dd/mm/aaaa.")
             st.stop()
         
-        tickers_list = sorted(list(set([ticker.strip().upper() for ticker in tickers_input.split(',') if ticker.strip()])))
+        tickers_list_bruta = sorted(list(set([ticker.strip().upper() for ticker in tickers_input.split(',') if ticker.strip()])))
+        
+        yf_tickers = []
+        av_tickers = []
+        b3_tickers = []
+        
+        for ticker in tickers_list_bruta:
+            if ticker == "IP":
+                av_tickers.append(ticker)
+            elif ticker in b3_tickers_set:
+                b3_tickers.append(ticker)
+            else:
+                yf_tickers.append(ticker)
+        
+        all_dividends_temp = []
+        all_bonuses_temp = []
         
         with st.spinner('Buscando dados... Por favor, aguarde.'):
-            all_dividends_temp = []
-            all_bonuses_temp = []
-
-            for ticker in tickers_list:
-                is_b3_ticker = ticker in b3_tickers_set
-                is_alpha_vantage_ticker = ticker == "IP" # Exemplo de ticker da Alpha Vantage
-                
-                # Preços Históricos (Sempre do Yahoo Finance)
-                if "Preços Históricos" in tipos_dados_selecionados:
-                    dados_acoes_dict, erros_acoes = buscar_dados_acoes(ticker, data_inicio_input, data_fim_input, empresas_df=df_empresas)
-                    st.session_state.todos_dados_acoes.update(dados_acoes_dict)
-                    st.session_state.erros_gerais.extend(erros_acoes)
-
-                # Dividendos e Bonificações
-                if "Dividendos" in tipos_dados_selecionados or "Bonificações" in tipos_dados_selecionados:
-                    if is_b3_ticker:
-                        if "Dividendos" in tipos_dados_selecionados:
-                            df_dividendos_b3 = buscar_dividendos_b3(ticker, df_empresas, data_inicio_dt, data_fim_dt)
-                            if not df_dividendos_b3.empty: all_dividends_temp.append(df_dividendos_b3)
-                        if "Bonificações" in tipos_dados_selecionados:
-                            df_bonificacoes_b3 = buscar_bonificacoes_b3(ticker, df_empresas, data_inicio_dt, data_fim_dt)
-                            if not df_bonificacoes_b3.empty: all_bonuses_temp.append(df_bonificacoes_b3)
-                    
-                    elif is_alpha_vantage_ticker:
-                        df_div_av, df_bon_av = buscar_eventos_alpha_vantage(ticker, alpha_vantage_key, data_inicio_dt, data_fim_dt)
-                        if "Dividendos" in tipos_dados_selecionados and not df_div_av.empty:
-                            all_dividends_temp.append(df_div_av)
-                        if "Bonificações" in tipos_dados_selecionados and not df_bon_av.empty:
-                            all_bonuses_temp.append(df_bon_av)
-                    
-                    else: # Tratar como Yahoo Finance genérico
-                        df_div_yf, df_bon_yf = buscar_eventos_yfinance(ticker, data_inicio_dt, data_fim_dt)
-                        if "Dividendos" in tipos_dados_selecionados and not df_div_yf.empty:
-                            all_dividends_temp.append(df_div_yf)
-                        if "Bonificações" in tipos_dados_selecionados and not df_bon_yf.empty:
-                            all_bonuses_temp.append(df_bon_yf)
+            # 1. Busca no Yahoo Finance (inclui tickers da B3)
+            if yf_tickers or b3_tickers:
+                todos_tickers_yf = yf_tickers + b3_tickers
+                precos_yf, div_yf, bon_yf, erros_yf = buscar_dados_yfinance_completo(
+                    todos_tickers_yf, data_inicio_input, data_fim_input, df_empresas
+                )
+                st.session_state.todos_dados_acoes.update(precos_yf)
+                st.session_state.erros_gerais.extend(erros_yf)
+                if "Dividendos" in tipos_dados_selecionados:
+                    all_dividends_temp.extend(div_yf.values())
+                if "Bonificações" in tipos_dados_selecionados:
+                    all_bonuses_temp.extend(bon_yf.values())
             
+            # 2. Busca na B3 (apenas eventos societários, pois preços já foram buscados acima)
+            if b3_tickers:
+                for ticker in b3_tickers:
+                    if "Dividendos" in tipos_dados_selecionados:
+                        df_dividendos_b3 = buscar_dividendos_b3(ticker, df_empresas, data_inicio_dt, data_fim_dt)
+                        if not df_dividendos_b3.empty: all_dividends_temp.append(df_dividendos_b3)
+                    if "Bonificações" in tipos_dados_selecionados:
+                        df_bonificacoes_b3 = buscar_bonificacoes_b3(ticker, df_empresas, data_inicio_dt, data_fim_dt)
+                        if not df_bonificacoes_b3.empty: all_bonuses_temp.append(df_bonificacoes_b3)
+            
+            # 3. Busca na Alpha Vantage
+            if av_tickers:
+                df_div_av, df_bon_av = buscar_eventos_alpha_vantage(av_tickers[0], alpha_vantage_key, data_inicio_dt, data_fim_dt)
+                if "Dividendos" in tipos_dados_selecionados and not df_div_av.empty:
+                    all_dividends_temp.append(df_div_av)
+                if "Bonificações" in tipos_dados_selecionados and not df_bon_av.empty:
+                    all_bonuses_temp.append(df_bon_av)
+            
+            # Agrega e atualiza o estado da sessão
             if all_dividends_temp: st.session_state.todos_dados_dividendos = {f"div_{i}": df for i, df in enumerate(all_dividends_temp)}
             if all_bonuses_temp: st.session_state.todos_dados_bonificacoes = {f"bon_{i}": df for i, df in enumerate(all_bonuses_temp)}
 
