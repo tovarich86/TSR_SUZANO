@@ -111,10 +111,8 @@ def buscar_dividendos_b3(ticker, empresas_df, data_inicio, data_fim):
     if 'lastDatePriorEx' in df.columns:
         df['lastDatePriorEx_dt'] = pd.to_datetime(df['lastDatePriorEx'], format='%d/%m/%Y', errors='coerce')
         df = df.dropna(subset=['lastDatePriorEx_dt'])
-        # --- CORREÇÃO APLICADA AQUI: O nome da coluna no filtro foi corrigido de 'lastDatePrior_dt' para 'lastDatePriorEx_dt' ---
         df = df[(df['lastDatePriorEx_dt'] >= data_inicio) & (df['lastDatePriorEx_dt'] <= data_fim)]
         df = df.drop(columns=['lastDatePriorEx_dt'])
-        # --- Adicionado: Garante que a coluna de data original seja string para evitar erro ArrowTypeError ---
         df['lastDatePriorEx'] = df['lastDatePriorEx'].astype(str)
     if df.empty: return pd.DataFrame()
     cols_to_keep = ['Ticker', 'paymentDate', 'typeStock', 'lastDatePriorEx', 'value', 'relatedToAction', 'label', 'ratio']
@@ -146,7 +144,6 @@ def buscar_bonificacoes_b3(ticker, empresas_df, data_inicio, data_fim):
                 df = df.dropna(subset=['lastDatePrior_dt'])
                 df = df[(df['lastDatePrior_dt'] >= data_inicio) & (df['lastDatePrior_dt'] <= data_fim)]
                 df = df.drop(columns=['lastDatePrior_dt'])
-                # --- Adicionado: Garante que a coluna de data original seja string para evitar erro ArrowTypeError ---
                 df['lastDatePrior'] = df['lastDatePrior'].astype(str)
             if df.empty: return pd.DataFrame()
             cols_to_keep = ['Ticker', 'label', 'lastDatePrior', 'factor', 'approvedIn', 'isinCode']
@@ -244,23 +241,31 @@ def buscar_dados_yfinance_completo(tickers_list, data_inicio_input, data_fim_inp
 # --- NOVA FUNÇÃO: Busca completa de dados na Alpha Vantage ---
 @st.cache_data(show_spinner=False)
 def buscar_dados_alpha_vantage_completo(ticker, api_key, data_inicio, data_fim):
-    if not api_key:
-        st.warning(f"Chave da API da Alpha Vantage não fornecida para o ticker {ticker}.")
-        return {}, pd.DataFrame(), pd.DataFrame(), []
-    
-    url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={ticker}&apikey={api_key}&outputsize=full"
-    
     precos_dict = {}
     dividends_df = pd.DataFrame()
     bonuses_df = pd.DataFrame()
     erros = []
     
+    # Adicionada etapa de validação do ticker na API
+    url_valida = f"https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords={ticker}&apikey={api_key}"
+    try:
+        val_resp = requests.get(url_valida, timeout=30)
+        val_resp.raise_for_status()
+        val_data = val_resp.json()
+        if "bestMatches" not in val_data or not val_data["bestMatches"]:
+            erros.append(f"Ticker '{ticker}' não encontrado na API da Alpha Vantage. Verifique o símbolo.")
+            return {}, pd.DataFrame(), pd.DataFrame(), erros
+    except Exception as e:
+        erros.append(f"Erro ao validar o ticker '{ticker}' na Alpha Vantage: {e}")
+        return {}, pd.DataFrame(), pd.DataFrame(), erros
+        
+    url_dados = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={ticker}&apikey={api_key}&outputsize=full"
+    
     try:
         with st.spinner(f"Buscando dados na Alpha Vantage para {ticker}..."):
-            response = requests.get(url, timeout=30)
+            response = requests.get(url_dados, timeout=30)
             response.raise_for_status()
             data = response.json()
-            
             if "Error Message" in data:
                 erros.append(f"Erro na API da Alpha Vantage para {ticker}: {data['Error Message']}")
                 return {}, pd.DataFrame(), pd.DataFrame(), erros
@@ -269,55 +274,25 @@ def buscar_dados_alpha_vantage_completo(ticker, api_key, data_inicio, data_fim):
                 return {}, pd.DataFrame(), pd.DataFrame(), erros
             
             time_series = data["Time Series (Daily)"]
-            
             all_prices = []
             all_dividends = []
             all_bonuses = []
-            
             for date_str, values in time_series.items():
                 date_dt = datetime.strptime(date_str, '%Y-%m-%d')
                 if data_inicio <= date_dt <= data_fim:
-                    # Extrai dados de preços
-                    all_prices.append({
-                        'Ticker': ticker,
-                        'Date': date_dt.strftime('%d/%m/%Y'),
-                        'Open': float(values['1. open']),
-                        'High': float(values['2. high']),
-                        'Low': float(values['3. low']),
-                        'Close': float(values['4. close']),
-                        'Adj Close': float(values['5. adjusted close']),
-                        'Volume': int(values['6. volume'])
-                    })
-                    
-                    # Extrai dados de dividendos
+                    all_prices.append({'Ticker': ticker, 'Date': date_dt.strftime('%d/%m/%Y'), 'Open': float(values['1. open']), 'High': float(values['2. high']), 'Low': float(values['3. low']), 'Close': float(values['4. close']), 'Adj Close': float(values['5. adjusted close']), 'Volume': int(values['6. volume'])})
                     if float(values.get('7. dividend amount', 0)) > 0:
-                        all_dividends.append({
-                            'Ticker': ticker,
-                            'paymentDate': date_dt.strftime('%d/%m/%Y'),
-                            'value': float(values['7. dividend amount']),
-                            'typeStock': 'Dividendo',
-                            'relatedToAction': 'Alpha Vantage'
-                        })
-                    
-                    # Extrai dados de bonificações
+                        all_dividends.append({'Ticker': ticker, 'paymentDate': date_dt.strftime('%d/%m/%Y'), 'value': float(values['7. dividend amount']), 'typeStock': 'Dividendo', 'relatedToAction': 'Alpha Vantage'})
                     if float(values.get('8. split coefficient', 1)) != 1.0:
-                        all_bonuses.append({
-                            'Ticker': ticker,
-                            'lastDatePrior': date_dt.strftime('%d/%m/%Y'),
-                            'factor': float(values['8. split coefficient']),
-                            'label': 'Bonificação (Stock Split)',
-                            'relatedToAction': 'Alpha Vantage'
-                        })
+                        all_bonuses.append({'Ticker': ticker, 'lastDatePrior': date_dt.strftime('%d/%m/%Y'), 'factor': float(values['8. split coefficient']), 'label': 'Bonificação (Stock Split)', 'relatedToAction': 'Alpha Vantage'})
 
             if not all_prices:
                 erros.append(f"Nenhum dado de preços encontrado na Alpha Vantage para {ticker}.")
-
+            
             precos_dict[ticker] = pd.DataFrame(all_prices)
             dividends_df = pd.DataFrame(all_dividends)
             bonuses_df = pd.DataFrame(all_bonuses)
-            
             return precos_dict, dividends_df, bonuses_df, erros
-
     except Exception as e:
         erros.append(f"Erro ao buscar dados na Alpha Vantage para {ticker}: {e}")
         return {}, pd.DataFrame(), pd.DataFrame(), erros
@@ -327,8 +302,6 @@ def buscar_dados_alpha_vantage_completo(ticker, api_key, data_inicio, data_fim):
 # ============================================
 st.set_page_config(layout="wide")
 st.title('Consulta Dados de Mercado B3, Yahoo Finance e Alpha Vantage')
-
-# --- Carrega o DataFrame de empresas B3 ---
 df_empresas = carregar_empresas()
 if df_empresas.empty:
     st.error("Não foi possível carregar a lista de empresas B3. Verifique a URL ou o arquivo. A aplicação não pode continuar.")
@@ -337,28 +310,13 @@ b3_tickers_set = set()
 if 'Tickers' in df_empresas.columns:
     for t_list in df_empresas['Tickers'].dropna().str.split(','):
         for ticker in t_list:
-            if ticker.strip():
-                b3_tickers_set.add(ticker.strip().upper())
-
-
-# --- Entradas do Usuário ---
+            if ticker.strip(): b3_tickers_set.add(ticker.strip().upper())
 col1, col2 = st.columns(2)
 with col1:
     tickers_predefinidos = ['SUZB3', 'KLBN11', 'IP', 'CMPC.SN', 'UPM.HE']
-    tickers_selecionados = st.multiselect(
-        "Selecione os tickers para buscar:",
-        tickers_predefinidos,
-        default=tickers_predefinidos,
-        key="selected_tickers"
-    )
+    tickers_selecionados = st.multiselect("Selecione os tickers para buscar:", tickers_predefinidos, default=tickers_predefinidos, key="selected_tickers")
 with col2:
-    tipos_dados_selecionados = st.multiselect(
-        "Selecione os dados que deseja buscar:",
-        ["Preços Históricos", "Dividendos", "Bonificações"],
-        default=["Preços Históricos", "Dividendos", "Bonificações"],
-        key="data_types"
-    )
-
+    tipos_dados_selecionados = st.multiselect("Selecione os dados que deseja buscar:", ["Preços Históricos", "Dividendos", "Bonificações"], default=["Preços Históricos", "Dividendos", "Bonificações"], key="data_types")
 col3, col4, col5 = st.columns(3)
 with col3:
     data_inicio_input = st.text_input("Data de início (dd/mm/aaaa):", key="date_start", value="01/01/2023")
@@ -366,34 +324,22 @@ with col4:
     data_fim_input = st.text_input("Data de fim (dd/mm/aaaa):", key="date_end", value="31/12/2024")
 with col5:
     alpha_vantage_key = st.text_input("Alpha Vantage API Key:", type="password", help="Necessária para o ticker 'IP'.")
-
-# --- Mapeamento de fontes ---
-ticker_sources = {
-    'SUZB3': 'B3', 'KLBN11': 'B3',
-    'CMPC.SN': 'YF', 'UPM.HE': 'YF',
-    'IP': 'AV'
-}
-
-# --- Inicialização do Session State ---
+ticker_sources = {'SUZB3': 'B3', 'KLBN11': 'B3', 'CMPC.SN': 'YF', 'UPM.HE': 'YF', 'IP': 'AV'}
 if 'dados_buscados' not in st.session_state:
     st.session_state.dados_buscados = False
     st.session_state.todos_dados_acoes = {}
     st.session_state.todos_dados_dividendos = {}
     st.session_state.todos_dados_bonificacoes = {}
     st.session_state.erros_gerais = []
-
-# --- Botão e Lógica Principal ---
 if st.button('Buscar Dados', key="search_button"):
     st.session_state.dados_buscados = False
     st.session_state.todos_dados_acoes = {}
     st.session_state.todos_dados_dividendos = {}
     st.session_state.todos_dados_bonificacoes = {}
     st.session_state.erros_gerais = []
-
     if not tickers_selecionados or not tipos_dados_selecionados or not data_inicio_input or not data_fim_input:
         st.warning("Por favor, selecione ao menos um ticker, um tipo de dado e preencha as datas.")
         st.stop()
-    
     try:
         data_inicio_dt = datetime.strptime(data_inicio_input, "%d/%m/%Y")
         data_fim_dt = datetime.strptime(data_fim_input, "%d/%m/%Y")
@@ -403,16 +349,13 @@ if st.button('Buscar Dados', key="search_button"):
     except ValueError:
         st.error("Formato de data inválido. Use dd/mm/aaaa.")
         st.stop()
-    
     tickers_por_fonte = {'B3': [], 'YF': [], 'AV': []}
     for ticker in tickers_selecionados:
         fonte = ticker_sources.get(ticker)
         if fonte: tickers_por_fonte[fonte].append(ticker)
     all_dividends_temp = []
     all_bonuses_temp = []
-    
     with st.spinner('Buscando dados... Por favor, aguarde.'):
-        # 1. Busca no Yahoo Finance (Tickers YF e B3)
         tickers_yf_e_b3 = tickers_por_fonte['YF'] + tickers_por_fonte['B3']
         if tickers_yf_e_b3:
             precos_yf, div_yf, bon_yf, erros_yf = buscar_dados_yfinance_completo(
@@ -427,8 +370,6 @@ if st.button('Buscar Dados', key="search_button"):
             if "Bonificações" in tipos_dados_selecionados:
                 for t in tickers_por_fonte['YF']:
                     if t in bon_yf: all_bonuses_temp.append(bon_yf[t])
-        
-        # 2. Busca na B3 (apenas eventos para tickers B3)
         if tickers_por_fonte['B3']:
             for ticker in tickers_por_fonte['B3']:
                 if "Dividendos" in tipos_dados_selecionados:
@@ -437,8 +378,6 @@ if st.button('Buscar Dados', key="search_button"):
                 if "Bonificações" in tipos_dados_selecionados:
                     df_bonificacoes_b3 = buscar_bonificacoes_b3(ticker, df_empresas, data_inicio_dt, data_fim_dt)
                     if not df_bonificacoes_b3.empty: all_bonuses_temp.append(df_bonificacoes_b3)
-        
-        # 3. Busca na Alpha Vantage (todos os dados para o ticker IP)
         if tickers_por_fonte['AV']:
             ticker = tickers_por_fonte['AV'][0]
             precos_av, div_av, bon_av, erros_av = buscar_dados_alpha_vantage_completo(ticker, alpha_vantage_key, data_inicio_dt, data_fim_dt)
@@ -449,14 +388,10 @@ if st.button('Buscar Dados', key="search_button"):
                 all_dividends_temp.append(div_av)
             if "Bonificações" in tipos_dados_selecionados and not bon_av.empty:
                 all_bonuses_temp.append(bon_av)
-        
         if all_dividends_temp: st.session_state.todos_dados_dividendos = {f"div_{i}": df for i, df in enumerate(all_dividends_temp)}
         if all_bonuses_temp: st.session_state.todos_dados_bonificacoes = {f"bon_{i}": df for i, df in enumerate(all_bonuses_temp)}
-
     st.session_state.dados_buscados = True
     st.rerun()
-
-# --- EXIBIÇÃO E DOWNLOAD ---
 if st.session_state.get('dados_buscados', False):
     if st.session_state.erros_gerais:
         for erro in st.session_state.erros_gerais:
@@ -503,8 +438,6 @@ if st.session_state.get('dados_buscados', False):
             st.download_button(label="Baixar arquivo Excel", data=excel_data, file_name=nome_arquivo, mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         except Exception as e:
             st.error(f"Erro ao gerar o arquivo Excel: {e}")
-
-# --- Rodapé ---
 st.markdown("""
 ---
 **Fontes dos dados:**
