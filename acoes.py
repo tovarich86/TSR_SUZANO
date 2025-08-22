@@ -154,7 +154,6 @@ def buscar_bonificacoes_b3(ticker, empresas_df, data_inicio, data_fim):
         st.error(f"Erro ao buscar bonificações na B3 para {ticker}: {e}")
         return pd.DataFrame()
 
-# --- NOVA FUNÇÃO: Busca completa de dados no Yahoo Finance (incluindo B3) ---
 @st.cache_data(show_spinner=False)
 def buscar_dados_yfinance_completo(tickers_list, data_inicio_input, data_fim_input, empresas_df):
     precos_dict = {}
@@ -242,7 +241,7 @@ def buscar_dados_yfinance_completo(tickers_list, data_inicio_input, data_fim_inp
 # Interface do Streamlit
 # ============================================
 st.set_page_config(layout="wide")
-st.title('Consulta de Ativos TSR Suzano')
+st.title('Consulta Tickers para TSR Suzano')
 
 # --- Carrega o DataFrame de empresas B3 ---
 df_empresas = carregar_empresas()
@@ -274,8 +273,7 @@ with col4:
 ticker_sources = {
     'SUZB3': 'B3', 'KLBN11': 'B3',
     'CMPC.SN': 'YF', 'UPM.HE': 'YF',
-    'IP': 'YF' # Alterado de 'AV' para 'YF'
-}
+    'IP': 'YF' 
 
 # --- Inicialização do Session State ---
 if 'dados_buscados' not in st.session_state:
